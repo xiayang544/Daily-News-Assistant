@@ -39,6 +39,7 @@ class UserIn(BaseModel):
     topics: str = ""
     keywords: str = ""
     webhook_url: Optional[str] = None
+    push_channel: Optional[str] = None  # dingtalk | feishu | wecom；None 则跟随全局配置
 
 
 class GenerateIn(BaseModel):
@@ -52,12 +53,12 @@ def get_users():
 
 @app.post("/api/users", status_code=201)
 def post_user(u: UserIn):
-    return db.create_user(u.name, u.topics, u.keywords, u.webhook_url)
+    return db.create_user(u.name, u.topics, u.keywords, u.webhook_url, u.push_channel)
 
 
 @app.put("/api/users/{user_id}")
 def put_user(user_id: int, u: UserIn):
-    updated = db.update_user(user_id, u.name, u.topics, u.keywords, u.webhook_url)
+    updated = db.update_user(user_id, u.name, u.topics, u.keywords, u.webhook_url, u.push_channel)
     if updated is None:
         raise HTTPException(404, "用户不存在")
     return updated

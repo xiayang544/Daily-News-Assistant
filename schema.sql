@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
     topics      TEXT    NOT NULL DEFAULT '',       -- 关注话题，逗号分隔，如 "LLM,智能体,开源模型"
     keywords    TEXT    NOT NULL DEFAULT '',       -- 关键词，逗号分隔，用于进一步过滤
     webhook_url TEXT,                              -- 可选：该用户专属推送 webhook（为空则用全局配置）
+    push_channel TEXT,                             -- 该 webhook 的渠道 dingtalk|feishu|wecom（为空跟随全局）
     created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 

@@ -20,27 +20,31 @@ def get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """执行 schema.sql 建表（幂等）。"""
+    """执行 schema.sql 建表（幂等），并为旧库补齐后加的列。"""
     schema = (BASE_DIR / "schema.sql").read_text(encoding="utf-8")
     get_conn().executescript(schema)
+    # CREATE TABLE IF NOT EXISTS 不会更新已存在的表，手动补列
+    cols = {r["name"] for r in get_conn().execute("PRAGMA table_info(users)")}
+    if "push_channel" not in cols:
+        get_conn().execute("ALTER TABLE users ADD COLUMN push_channel TEXT")
     get_conn().commit()
 
 
 # ---------- users ----------
 
-def create_user(name: str, topics: str, keywords: str, webhook_url: str | None = None) -> dict[str, Any]:
+def create_user(name: str, topics: str, keywords: str, webhook_url: str | None = None, push_channel: str | None = None) -> dict[str, Any]:
     cur = get_conn().execute(
-        "INSERT INTO users (name, topics, keywords, webhook_url) VALUES (?, ?, ?, ?)",
-        (name, topics, keywords, webhook_url),
+        "INSERT INTO users (name, topics, keywords, webhook_url, push_channel) VALUES (?, ?, ?, ?, ?)",
+        (name, topics, keywords, webhook_url, push_channel),
     )
     get_conn().commit()
     return get_user(cur.lastrowid)
 
 
-def update_user(user_id: int, name: str, topics: str, keywords: str, webhook_url: str | None) -> dict[str, Any] | None:
+def update_user(user_id: int, name: str, topics: str, keywords: str, webhook_url: str | None, push_channel: str | None) -> dict[str, Any] | None:
     cur = get_conn().execute(
-        "UPDATE users SET name = ?, topics = ?, keywords = ?, webhook_url = ? WHERE id = ?",
-        (name, topics, keywords, webhook_url, user_id),
+        "UPDATE users SET name = ?, topics = ?, keywords = ?, webhook_url = ?, push_channel = ? WHERE id = ?",
+        (name, topics, keywords, webhook_url, push_channel, user_id),
     )
     get_conn().commit()
     return get_user(user_id) if cur.rowcount else None

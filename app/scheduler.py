@@ -27,7 +27,10 @@ def generate_for_user(user: dict) -> dict:
         file_path=result["file_path"],
     )
     try:
-        push_briefing(result["title"], result["content"], webhook_url=user.get("webhook_url"))
+        push_briefing(
+            result["title"], result["content"],
+            webhook_url=user.get("webhook_url"), channel=user.get("push_channel"),
+        )
     except Exception as e:  # 推送失败不影响简报本身（已入库）
         logger.warning("推送失败（简报已保存）: %s", e)
     return briefing
