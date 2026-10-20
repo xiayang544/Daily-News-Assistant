@@ -1,85 +1,63 @@
-"""简报推送：钉钉 / 飞书 / 企业微信 自定义机器人 webhook。"""
+"""简报邮件推送：SMTP（开发环境可用 Mailpit 模拟收信）。
+
+SMTP_HOST 未配置时不实际发信，推送记录标记 skipped，
+简报仍可在 Web 页面查看，之后配置好 SMTP 可重试推送。
+"""
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import time
-import urllib.parse
-
-import httpx
+import logging
+import smtplib
+from email.header import Header
+from email.mime.text import MIMEText
+from email.utils import formataddr
 
 from .config import settings
+
+logger = logging.getLogger("push")
 
 
 class PushError(RuntimeError):
     pass
 
 
-def push_briefing(title: str, content: str, webhook_url: str | None = None, channel: str | None = None) -> None:
-    """把简报推送到 IM。webhook/channel 未配置时静默跳过（只留 Web 页面查看）。"""
-    channel = (channel or settings.push_channel).lower()
-    webhook = webhook_url or settings.push_webhook_url
-    if not channel or not webhook:
-        return
+def send_briefing_email(to_email: str, title: str, markdown_content: str) -> None:
+    """把简报以邮件发出。未配置 SMTP 时抛出 PushError 说明原因。"""
+    if not settings.smtp_host:
+        raise PushError("SMTP 未配置（.env 中设置 SMTP_HOST 等，开发环境可用 Mailpit）")
 
-    if channel == "dingtalk":
-        _push_dingtalk(webhook, title, content)
-    elif channel == "feishu":
-        _push_feishu(webhook, title, content)
-    elif channel == "wecom":
-        _push_wecom(webhook, title, content)
-    else:
-        raise PushError(f"未知的推送渠道: {channel}（支持 dingtalk / feishu / wecom）")
+    subject = title
+    body = (
+        f"{markdown_content}\n\n"
+        f"--\n来自每日 AI 新闻助手 · 回复本邮件无效\n"
+        f"完整历史简报见 Web 页面\n"
+    )
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = formataddr(("每日 AI 新闻助手", _addr(settings.smtp_from)))
+    msg["To"] = to_email
 
-
-def _post(webhook: str, payload: dict) -> None:
     try:
-        resp = httpx.post(webhook, json=payload, timeout=15)
-        resp.raise_for_status()
-    except httpx.HTTPError as e:
-        raise PushError(f"推送请求失败: {e}") from e
-    data = resp.json()
-    # 三家的错误码字段不一致，统一检查
-    code = data.get("errcode", data.get("code"))
-    if code not in (0, None):
-        raise PushError(f"推送被拒绝: {data}")
+        # Mailpit 等本地模拟服务无 STARTTLS 也无认证，按配置降级
+        if settings.smtp_starttls and settings.smtp_port != 2525:
+            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as s:
+                try:
+                    s.starttls()
+                except smtplib.SMTPNotSupportedError:
+                    pass
+                if settings.smtp_user:
+                    s.login(settings.smtp_user, settings.smtp_pass)
+                s.sendmail(_addr(settings.smtp_from), [to_email], msg.as_string())
+        else:
+            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as s:
+                if settings.smtp_user:
+                    s.login(settings.smtp_user, settings.smtp_pass)
+                s.sendmail(_addr(settings.smtp_from), [to_email], msg.as_string())
+    except (smtplib.SMTPException, OSError) as e:
+        raise PushError(f"邮件发送失败: {e}") from e
 
 
-def _push_dingtalk(webhook: str, title: str, content: str) -> None:
-    if settings.dingtalk_secret:
-        webhook = _signed_url(webhook, settings.dingtalk_secret)
-    _post(webhook, {
-        "msgtype": "markdown",
-        "markdown": {"title": title, "text": f"# {title}\n\n{content}"},
-    })
-
-
-def _push_feishu(webhook: str, title: str, content: str) -> None:
-    # 飞书自定义机器人走 post 富文本消息（一行一个 text 块）
-    _post(webhook, {
-        "msg_type": "post",
-        "content": {
-            "post": {
-                "zh_cn": {
-                    "title": title,
-                    "content": [[{"tag": "text", "text": line} for line in content.splitlines() if line.strip()]],
-                }
-            }
-        },
-    })
-
-
-def _push_wecom(webhook: str, title: str, content: str) -> None:
-    # 企业微信 markdown 上限 4096 字节，超长截断
-    text = f"# {title}\n\n{content}"
-    if len(text.encode()) > 4000:
-        text = text.encode()[:4000].decode(errors="ignore") + "\n\n...（内容过长已截断，完整简报见 Web 页面）"
-    _post(webhook, {"msgtype": "markdown", "markdown": {"content": text}})
-
-
-def _signed_url(webhook: str, secret: str) -> str:
-    """钉钉机器人'加签'模式的 URL 计算。"""
-    ts = str(round(time.time() * 1000))
-    sign = base64.b64encode(hmac.new(secret.encode(), f"{ts}\n{secret}".encode(), hashlib.sha256).digest()).decode()
-    return f"{webhook}&timestamp={ts}&sign={urllib.parse.quote_plus(sign)}"
+def _addr(from_header: str) -> str:
+    """从 "Name <a@b.c>" 提取纯地址；无尖括号则原样返回。"""
+    if "<" in from_header and ">" in from_header:
+        return from_header[from_header.index("<") + 1:from_header.index(">")]
+    return from_header

@@ -1,11 +1,13 @@
 """Agent 核心循环：DeepSeek function calling。
-from __future__ import annotations
 
 流程完全由 LLM 驱动——每轮把工具清单交给模型，模型自主决定调用哪个工具、
-调用几次、何时给出最终回答。代码侧只负责执行工具并把结果回填。
+调用几次、何时给出最终回答。代码侧只负责执行工具并把结果回填，
+并施加最大轮数与时间预算防止无限循环。
 """
+from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from typing import Any
 
@@ -14,36 +16,38 @@ from openai import OpenAI
 from ..config import settings
 from .tools import TOOL_MAP, TOOLS
 
-MAX_ITERATIONS = 30
+SYSTEM_PROMPT = """你是每日 AI 新闻简报助手。任务：根据用户的订阅偏好，收集新闻并产出一份 Markdown 简报。
 
-SYSTEM_PROMPT = """你是每日 AI 新闻简报助手。你的任务：根据用户的订阅偏好，收集今天的 AI 新闻并产出一份 Markdown 简报。
-
-工作要求：
-1. 用 web_search 工具联网搜索新闻。先围绕用户关注的话题逐个搜索（每个话题 1-2 次不同关键词，可加"最新/今天/新闻"等限定词），搜索次数由你根据信息量自行决定。
-2. 从搜索结果中筛选出与用户话题/关键词真正相关、且有信息量的新闻，剔除软文和重复内容。宁缺毋滥。
-3. 用 write_file 工具把简报写入 `data/briefings/{user_id}/{YYYY-MM-DD}.md`（date 用今天的实际日期）。
-4. 简报格式要求：
+工作方式（由你自主决定具体步骤与顺序，以下是要求而非流程）：
+1. 新闻采集混合使用两类工具：
+   - fetch_rss：稳定获取已配置 RSS 源的新闻（源清单可用 read_file 读取 config/news_sources.txt）
+   - search_news：按用户话题/关键词主动检索，补充 RSS 未覆盖的内容
+   两类各用多少、先搜哪个话题、是否补充搜索，由你根据中间结果自行判断。
+2. 可用 get_article 核实某条重要新闻的原文，或用 search_content 检索 data/briefings/ 下的历史简报，避免与往期重复。
+3. 严格防幻觉：简报中的每一条新闻都必须来自工具返回的真实结果，必须保留原始 URL、来源名称和发布时间（如有）。不允许凭记忆或推测编造任何新闻事实。若某话题确实没有新闻，直接说明覆盖不足，不要凑数。
+4. 用 write_file 把简报写入 `data/briefings/{user_id}/{YYYY-MM-DD}.md`。
+5. 简报格式：
    - 标题：`# AI 日报 · YYYY-MM-DD · {用户名}专属`
-   - 每条新闻：`## 标题`，下面用 2-3 句话概括要点，并附原文链接 `> 来源: <url>`
-   - 结尾加一节 `## 今日小结`，用 3 句以内总结当天趋势
-   - 总条数控制在 5-10 条
-5. 写完文件后，用一句自然语言总结你做了什么即可结束，不要在回复里重复简报全文。
+   - 每条新闻：`## 标题`，2-3 句话概括要点，附 `> 来源: <来源名> | 时间: <发布时间> | <URL>`
+   - 结尾一节 `## 今日小结`，3 句以内总结当天趋势
+   - 总条数 5-10 条，优先最近 24 小时，扩大时间范围时明确标注日期
+6. 写完文件后，用一两句话总结你调用了哪些工具、做了什么，即可结束。
 
-注意：今天的日期以你实际执行时为准，可先用 bash 执行 `date` 确认。"""
+今天的日期以实际执行时为准，可先用 bash 执行 date 确认。"""
 
 
-def _build_user_prompt(user: dict[str, Any]) -> str:
+def _build_user_prompt(user: dict) -> str:
     topics = user.get("topics") or "AI 领域整体动态"
     keywords = user.get("keywords") or "无"
     return (
         f"用户 #{user['id']} {user['name']} 的订阅偏好：\n"
         f"- 关注话题：{topics}\n"
         f"- 关键词：{keywords}\n"
-        f"请现在开始为这位用户收集今天（{datetime.now().strftime('%Y-%m-%d')}）的 AI 新闻并生成简报。"
+        f"请现在开始为这位用户收集今天的 AI 新闻并生成简报。"
     )
 
 
-def run_agent(user: dict[str, Any]) -> dict[str, Any]:
+def run_agent(user: dict) -> dict:
     """跑一轮完整 Agent 循环，返回 {title, content, file_path, trace}。
 
     简报正文优先取 Agent 落盘的 markdown 文件；若模型没写文件，
@@ -57,9 +61,13 @@ def run_agent(user: dict[str, Any]) -> dict[str, Any]:
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": _build_user_prompt(user)},
     ]
-    trace: list[dict[str, Any]] = []
+    trace = []
+    deadline = time.monotonic() + settings.agent_time_budget
 
-    for _ in range(MAX_ITERATIONS):
+    for round_no in range(1, settings.agent_max_iterations + 1):
+        if time.monotonic() > deadline:
+            trace.append({"round": round_no, "note": f"达到时间预算 {settings.agent_time_budget}s，强制结束"})
+            break
         resp = client.chat.completions.create(
             model=settings.deepseek_model,
             messages=messages,
@@ -70,7 +78,7 @@ def run_agent(user: dict[str, Any]) -> dict[str, Any]:
 
         if not msg.tool_calls:
             # 模型认为可以收工了
-            trace.append({"role": "assistant", "content": msg.content or ""})
+            trace.append({"round": round_no, "role": "assistant", "content": msg.content or ""})
             break
 
         messages.append(msg.model_dump(exclude_none=True))
@@ -85,12 +93,15 @@ def run_agent(user: dict[str, Any]) -> dict[str, Any]:
                     result = f"参数不是合法 JSON: {e}"
                 else:
                     result = tool(**args)
-            trace.append({"tool": call.function.name, "args": call.function.arguments, "result": result[:500]})
-            messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": result}
-            )
+            trace.append({
+                "round": round_no,
+                "tool": call.function.name,
+                "args": call.function.arguments,
+                "result": result[:500],
+            })
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
     else:
-        trace.append({"role": "assistant", "content": "（达到最大迭代次数，强制结束）"})
+        trace.append({"note": f"达到最大轮数 {settings.agent_max_iterations}，强制结束"})
 
     # 从落盘文件读取最终简报
     today = datetime.now().strftime("%Y-%m-%d")
@@ -104,6 +115,9 @@ def run_agent(user: dict[str, Any]) -> dict[str, Any]:
             "",
         )
         title = f"AI 日报 · {today}"
+
+    if not content.strip():
+        raise RuntimeError("Agent 未能产出简报内容（未写文件且最终回复为空）")
 
     return {
         "title": title,

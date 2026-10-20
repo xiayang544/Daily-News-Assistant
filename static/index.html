@@ -145,6 +145,24 @@
   .empty h3 { color: var(--text); font-size: 16px; margin-bottom: 6px; }
   .empty p { font-size: 13px; line-height: 1.7; }
 
+  /* 话题 chips */
+  .chip {
+    display: inline-flex; align-items: center; padding: 5px 12px; border-radius: 20px;
+    border: 1px solid var(--border); background: #fff; font-size: 13px; cursor: pointer;
+    transition: all .15s; user-select: none;
+  }
+  .chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  /* Agent 轨迹面板 */
+  .trace-box { display: none; border-bottom: 1px solid var(--border); background: #0f172a; }
+  .trace-box.open { display: block; }
+  .trace-box pre {
+    margin: 0; padding: 16px 22px; color: #a5b4fc; font-size: 12px; line-height: 1.7;
+    overflow-x: auto; font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .trace-box .tstep { padding: 6px 22px; color: #cbd5e1; font-size: 12.5px; font-family: Menlo, monospace; border-bottom: 1px solid #1e293b; }
+  .trace-box .tstep b { color: #a5b4fc; }
+  .trace-box .tstep .out { color: #64748b; display: block; margin-top: 2px; max-height: 60px; overflow: hidden; }
+
   /* Toast */
   #toast {
     position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(80px);
@@ -196,24 +214,31 @@
 
 <dialog id="user-dialog">
   <h2 id="dlg-title">新增订阅</h2>
-  <div class="sub">设置身份与偏好，Agent 会据此为你筛选新闻</div>
+  <div class="sub">设置身份、邮箱与偏好，Agent 会据此筛选新闻并邮件推送</div>
   <form id="user-form" method="dialog">
     <input type="hidden" id="f-id">
     <label>身份 / 昵称 <span>*</span></label>
     <input id="f-name" required maxlength="50" placeholder="如：小夏">
-    <label>关注话题 <span>（逗号分隔）</span></label>
+    <label>邮箱 <span>*（简报推送地址）</span></label>
+    <input id="f-email" required type="email" placeholder="you@example.com">
+    <label>时区 <span>（每天该时区的早上触发）</span></label>
+    <select id="f-tz">
+      <option value="Asia/Shanghai">Asia/Shanghai（北京时间）</option>
+      <option value="Asia/Tokyo">Asia/Tokyo</option>
+      <option value="Europe/London">Europe/London</option>
+      <option value="Europe/Berlin">Europe/Berlin</option>
+      <option value="America/New_York">America/New_York</option>
+      <option value="America/Los_Angeles">America/Los_Angeles</option>
+    </select>
+    <label>关注话题 <span>（预设可多选，也可自行补充）</span></label>
+    <div id="topic-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px"></div>
     <input id="f-topics" placeholder="LLM, 智能体, 开源模型">
     <label>关键词 <span>（逗号分隔，进一步过滤）</span></label>
     <input id="f-keywords" placeholder="DeepSeek, Claude, 降本">
-    <label>专属推送 Webhook <span>（可选，留空用全局配置）</span></label>
-    <input id="f-webhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=…">
-    <label>Webhook 渠道 <span>（专属 webhook 对应的机器人类型）</span></label>
-    <select id="f-channel">
-      <option value="">跟随全局配置</option>
-      <option value="dingtalk">钉钉</option>
-      <option value="feishu">飞书</option>
-      <option value="wecom">企业微信</option>
-    </select>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:18px;cursor:pointer">
+      <input type="checkbox" id="f-enabled" style="width:auto" checked>
+      订阅中（关闭后暂停每日自动生成与推送）
+    </label>
     <div class="footer">
       <button type="button" class="btn outline" id="dlg-cancel">取消</button>
       <button type="submit" class="btn">保存</button>
@@ -226,6 +251,26 @@
 <script>
 const $ = id => document.getElementById(id);
 let users = [], currentUser = null, toastTimer = null;
+const PRESET_TOPICS = ['大语言模型', 'AI Agent', '开源模型', 'AI 产品', 'AI 政策', '算力芯片', '多模态', 'AI 安全'];
+
+function renderTopicChips(selected) {
+  const sel = new Set((selected || '').split(/[,，]/).map(s => s.trim()).filter(Boolean));
+  const box = $('topic-chips');
+  box.innerHTML = '';
+  for (const tp of PRESET_TOPICS) {
+    const c = document.createElement('span');
+    c.className = 'chip' + (sel.has(tp) ? ' on' : '');
+    c.textContent = tp;
+    c.onclick = () => { c.classList.toggle('on'); syncTopicsFromChips(); };
+    box.appendChild(c);
+  }
+}
+function syncTopicsFromChips() {
+  const on = [...document.querySelectorAll('#topic-chips .chip.on')].map(c => c.textContent);
+  const manual = $('f-topics').value.split(/[,，]/).map(s => s.trim()).filter(s => s && !PRESET_TOPICS.includes(s));
+  $('f-topics').value = [...on, ...manual].join(', ');
+}
+$('f-topics').addEventListener('input', () => renderTopicChips($('f-topics').value));
 
 function toast(msg, ok = true) {
   const t = $('toast');
@@ -265,6 +310,7 @@ async function loadUsers() {
     div.innerHTML = `
       <div class="name"><span class="avatar" style="background:${avatarColor(u.name)}">${esc(u.name[0] || '?')}</span>${esc(u.name)}</div>
       <div class="prefs">${esc(u.topics || '全部 AI 动态')}</div>
+      ${u.enabled === 0 || u.enabled === false ? '<div style="font-size:11px;color:#f87171;margin-top:4px">⏸ 已暂停订阅</div>' : ''}
       <div class="actions">
         <button class="btn small ghost" data-edit>编辑</button>
         <button class="btn small danger-text" data-del>删除</button>
@@ -292,7 +338,7 @@ function selectUser(id) {
   currentUser = id;
   const u = users.find(x => x.id === id);
   $('main-title').textContent = `${u.name} 的简报`;
-  $('main-sub').textContent = u.topics ? `订阅：${u.topics}` : '订阅：全部 AI 动态';
+  $('main-sub').textContent = `${u.email}${u.topics ? ' · 订阅：' + u.topics : ''}`;
   $('generate').disabled = false;
   loadUsers(); loadBriefings();
 }
@@ -302,10 +348,12 @@ function openDialog(u = null) {
   $('dlg-title').textContent = u ? '编辑订阅' : '新增订阅';
   $('f-id').value = u ? u.id : '';
   $('f-name').value = u ? u.name : '';
-  $('f-topics').value = u ? u.topics : '';
-  $('f-keywords').value = u ? u.keywords : '';
-  $('f-webhook').value = u ? (u.webhook_url || '') : '';
-  $('f-channel').value = u ? (u.push_channel || '') : '';
+  $('f-email').value = u ? u.email : '';
+  $('f-tz').value = u ? (u.timezone || 'Asia/Shanghai') : 'Asia/Shanghai';
+  $('f-topics').value = u ? (u.topics || '') : '';
+  renderTopicChips($('f-topics').value);
+  $('f-keywords').value = u ? (u.keywords || '') : '';
+  $('f-enabled').checked = u ? (u.enabled !== 0 && u.enabled !== false) : true;
   $('user-dialog').showModal();
 }
 $('btn-new').onclick = () => openDialog();
@@ -314,25 +362,38 @@ $('user-dialog').addEventListener('click', e => { if (e.target === $('user-dialo
 
 $('user-form').onsubmit = async e => {
   e.preventDefault();
-  const body = {
+  const id = $('f-id').value;
+  const userBody = {
     name: $('f-name').value.trim(),
+    email: $('f-email').value.trim(),
+    timezone: $('f-tz').value,
+  };
+  const subBody = {
     topics: $('f-topics').value.trim(),
     keywords: $('f-keywords').value.trim(),
-    webhook_url: $('f-webhook').value.trim() || null,
-    push_channel: $('f-channel').value || null,
+    enabled: $('f-enabled').checked,
   };
-  if (!body.name) return;
+  if (!userBody.name || !userBody.email) return;
   try {
-    const id = $('f-id').value;
-    await api(id ? `/api/users/${id}` : '/api/users', {
-      method: id ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+    let uid;
+    if (id) {
+      await api(`/api/users/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(userBody),
+      });
+      uid = id;
+    } else {
+      const u = await api('/api/users', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(userBody),
+      });
+      uid = u.id;
+    }
+    await api(`/api/subscriptions/${uid}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(subBody),
     });
-    toast(id ? '订阅已更新' : `已创建 ${body.name}`);
+    toast(id ? '订阅已更新' : `已创建 ${userBody.name}`);
     $('user-dialog').close();
     await loadUsers();
-    if (!currentUser && users.length) selectUser(users[users.length - 1].id);
+    if (!currentUser && users.length) selectUser(users.find(u => u.id === uid)?.id || users[users.length - 1].id);
   } catch (err) { toast(err.message, false); }
 };
 
@@ -362,15 +423,47 @@ function renderBriefings(list, user) {
     div.innerHTML = `
       <div class="briefing-head">
         <span class="badge">#${b.id}</span>
-        <span>${esc(b.created_at)}</span>
+        <span>${esc(b.brief_date || b.created_at)}</span>
+        <span class="badge" data-delivery="${b.id}">推送: …</span>
         <span class="spacer"></span>
+        <a href="javascript:void(0)" data-trace="${b.agent_run_id || ''}" style="${b.agent_run_id ? '' : 'display:none'}">🔧 工具调用轨迹</a>
         ${b.file_path ? `<a href="javascript:void(0)" data-copy="${esc(b.file_path)}">复制文件路径</a>` : ''}
       </div>
+      <div class="trace-box" data-tracebox="${b.id}"></div>
       <div class="briefing-body"><div class="md">${marked.parse(b.content)}</div></div>`;
     const copyLink = div.querySelector('[data-copy]');
     if (copyLink) copyLink.onclick = () => {
       navigator.clipboard.writeText(copyLink.dataset.copy).then(() => toast('文件路径已复制'));
     };
+    // 推送状态
+    api(`/api/briefings/${b.id}`).then(full => {
+      const el = div.querySelector('[data-delivery]');
+      const d = (full.deliveries || [])[0];
+      if (!d) { el.textContent = '推送: 未记录'; return; }
+      const map = { sent: ['已发送 ✓', '#059669'], failed: ['失败 ✕', '#dc2626'], skipped: ['跳过（SMTP 未配置）', '#d97706'], pending: ['待发送', '#64748b'] };
+      const [txt, color] = map[d.status] || [d.status, '#64748b'];
+      el.textContent = `推送: ${txt}`;
+      el.style.color = color;
+    }).catch(() => {});
+    // 工具调用轨迹
+    const traceLink = div.querySelector('[data-trace]');
+    const traceBox = div.querySelector('[data-tracebox]');
+    if (traceLink && traceLink.dataset.trace && traceLink.dataset.trace !== '') {
+      traceLink.onclick = async () => {
+        const open = traceBox.classList.toggle('open');
+        if (open && !traceBox.dataset.loaded) {
+          try {
+            const run = await api(`/api/agent-runs/${traceLink.dataset.trace}`);
+            traceBox.dataset.loaded = '1';
+            traceBox.innerHTML = `<pre>Agent 执行 #${run.id} · 状态 ${run.status} · ${run.start_time} → ${run.end_time || '…'}</pre>` +
+              run.trace.map(step => {
+                if (step.tool) return `<div class="tstep"><b>第${step.round}轮</b> 调用 <b>${esc(step.tool)}</b>(${esc((step.args || '').slice(0, 80))})<span class="out">${esc((step.result || '').slice(0, 200))}</span></div>`;
+                return `<div class="tstep" style="color:#a5b4fc"><b>${esc(step.role || 'note')}</b>: ${esc((step.content || step.note || '').slice(0, 300))}</div>`;
+              }).join('');
+          } catch (err) { toast(err.message, false); }
+        }
+      };
+    }
     box.appendChild(div);
   }
 }

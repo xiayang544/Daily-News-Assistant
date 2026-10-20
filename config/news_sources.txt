@@ -1,0 +1,5 @@
+Hacker News=https://hnrss.org/newest?q=AI+OR+LLM&count=30
+TechCrunch AI=https://techcrunch.com/category/artificial-intelligence/feed/
+The Verge AI=https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
+MIT Tech Review=https://www.technologyreview.com/feed/
+量子位=https://www.qbitai.com/feed

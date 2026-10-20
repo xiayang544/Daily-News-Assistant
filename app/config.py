@@ -24,15 +24,24 @@ class Settings:
         self.tavily_api_key: str = os.getenv("TAVILY_API_KEY", "")
         self.brave_api_key: str = os.getenv("BRAVE_API_KEY", "")
 
-        # 推送
-        self.push_channel: str = os.getenv("PUSH_CHANNEL", "").lower()  # dingtalk | feishu | wecom
-        self.push_webhook_url: str = os.getenv("PUSH_WEBHOOK_URL", "")
-        self.dingtalk_secret: str = os.getenv("DINGTALK_SECRET", "")
+        # 邮件推送（开发环境可用 Mailpit：docker run -p 1025:1025 -p 8025:8025 axllent/mailpit）
+        self.smtp_host: str = os.getenv("SMTP_HOST", "")        # 留空则不实际发信，推送记录为 skipped
+        self.smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+        self.smtp_user: str = os.getenv("SMTP_USER", "")
+        self.smtp_pass: str = os.getenv("SMTP_PASS", "")
+        self.smtp_from: str = os.getenv("SMTP_FROM", "Daily News Assistant <news@example.com>")
+        self.smtp_starttls: bool = os.getenv("SMTP_STARTTLS", "1") == "1"
 
         # 调度与存储
-        self.schedule_hour: int = int(os.getenv("SCHEDULE_HOUR", "8"))
+        self.schedule_hour: int = int(os.getenv("SCHEDULE_HOUR", "8"))  # 用户本地时间该点触发
+        self.default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Shanghai")
         self.db_path: Path = BASE_DIR / os.getenv("DB_PATH", "data/news.db")
         self.briefings_dir: Path = BASE_DIR / "data" / "briefings"
+        self.news_sources_path: Path = BASE_DIR / "config" / "news_sources.txt"
+
+        # Agent 循环限制：最大轮数与时间预算，防无限循环
+        self.agent_max_iterations: int = int(os.getenv("AGENT_MAX_ITERATIONS", "12"))
+        self.agent_time_budget: int = int(os.getenv("AGENT_TIME_BUDGET", "300"))  # 秒
 
         self.briefings_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
