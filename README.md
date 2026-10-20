@@ -8,7 +8,8 @@
 - **个性化订阅**：每个用户自定义关注话题与关键词（预设话题 + 自定义），Agent 据此搜索、过滤、撰写专属简报
 - **RSS + 搜索混合采集**：feedparser 抓取已配置 RSS 源（稳定基线），Tavily / Brave 联网搜索补充覆盖，`get_article` 核实原文
 - **防幻觉约束**：简报每条新闻必须来自工具真实返回，保留原始 URL、来源、发布时间；采集到的新闻落入 `news_items` 表（URL 唯一去重）
-- **定时邮件推送**：APScheduler 按用户时区每天触发，SMTP 发送简报邮件（开发环境可用 Mailpit 模拟收信）
+- **定时邮件推送**：APScheduler 按用户时区每天触发，SMTP 发送简报邮件，
+  支持 SSL(465) / STARTTLS(587) / 明文三种模式（开发环境可用 Mailpit 模拟收信）
 - **任务状态机与幂等**：`agent_runs`（running→success/failed）记录每次工具调用轨迹；`deliveries`（pending→sent/failed/skipped）记录推送结果，发送失败可单独重试而不重新生成；按用户+日期防重复生成
 - **Web 界面**：填身份（姓名/邮箱/时区）、设置订阅偏好（可暂停）、手动触发生成、查看历史简报与 Agent 工具调用轨迹
 
@@ -37,9 +38,15 @@ cp .env.example .env
 # 编辑 .env，填入：
 #   DEEPSEEK_API_KEY  —— https://platform.deepseek.com/ 申请
 #   TAVILY_API_KEY    —— https://tavily.com/ 申请（免费 1000 次/月）
-#   SMTP_*            —— 邮件推送配置；本地开发可先起 Mailpit：
+#   SMTP_*            —— 邮件推送配置，例如 HUST 校园邮箱：
+#                        SMTP_HOST=mail.hust.edu.cn  SMTP_PORT=465
+#                        SMTP_USER=xxx@hust.edu.cn  SMTP_PASS=客户端专用密码
+#                        SMTP_SECURITY=ssl
+#                        （QQ/163 邮箱同理，均为 465 SSL；授权码在邮箱设置里生成）
+#                        本地开发不起真邮件服务时，可跑 Mailpit 模拟收信：
 #                        docker run -p 1025:1025 -p 8025:8025 axllent/mailpit
-#                        （浏览器打开 http://localhost:8025 查看收到的邮件）
+#                        （SMTP_HOST=localhost SMTP_PORT=1025 SMTP_SECURITY=none，
+#                         浏览器打开 http://localhost:8025 查看收到的邮件）
 
 # 4. 启动（首次启动自动按 schema.sql 建表）
 uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -53,6 +60,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 服务运行期间，APScheduler 每小时检查一次：对每位"订阅中"的用户，其**本地时间**到达
 `SCHEDULE_HOUR`（默认 8 点）且当天尚未生成简报时自动执行。暂停订阅（enabled=0）的用户跳过。
 服务需保持运行定时才会触发；关闭终端后可用 `nohup` 或部署到服务器长期运行。
+
+### 推送失败与重试
+
+简报生成与邮件推送解耦：生成成功但发送失败（SMTP 未配好等）时，简报已安全入库，
+推送记录标记 `failed`，之后配好 SMTP 调 `POST /api/deliveries/{id}/retry` 即可补发，
+**不会重新跑 Agent、也不会重复发送已成功的邮件**（幂等）。
+Web 页面简报卡片上的「推送:」徽章实时显示每期投递状态。
 
 ## Agent 工具集（八个）
 
@@ -116,6 +130,18 @@ schema.sql         # 建表 SQL
 | GET | `/api/briefings/{id}` | 简报详情（含推送记录） |
 | GET | `/api/agent-runs/{id}` | Agent 工具调用轨迹 |
 | POST | `/api/deliveries/{id}/retry` | 重试失败的邮件推送 |
+
+## 实测验证
+
+以下链路均真实跑通（详见 git 历史）：
+
+- **Agent 完整循环**：11 轮 30 次工具调用——`bash` 确认日期 → `read_file` 读新闻源清单 →
+  `fetch_rss`×4（HN/TechCrunch/Verge/量子位）→ `search_news`×8（按用户话题不同关键词）→
+  `get_article`×8 核实原文 → `search_content` 检索历史简报去重 → `write_file` 落盘 → 自主收尾。
+  调用顺序由模型自主决定，完整轨迹存 `agent_runs` 表，Web 页面可查看
+- **邮件推送**：SMTP SSL 真实发信成功；推送失败后单独重试 `failed→sent`；已发送的重试不重复发（幂等）
+- **安全约束**：`bash` 白名单外命令（如 `rm`）被拒、重定向被拒、读取 `.env` 被拒、路径越界被拒
+- **去重**：`news_items` URL 唯一约束 + Agent 主动检索历史简报避免重复收录
 
 ## License
 
