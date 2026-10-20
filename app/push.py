@@ -37,23 +37,29 @@ def send_briefing_email(to_email: str, title: str, markdown_content: str) -> Non
     msg["To"] = to_email
 
     try:
-        # Mailpit 等本地模拟服务无 STARTTLS 也无认证，按配置降级
-        if settings.smtp_starttls and settings.smtp_port != 2525:
+        # SMTP_SECURITY: ssl(465) | starttls(587) | none(明文/本地 Mailpit)
+        security = settings.smtp_security
+        if security == "ssl" or (security == "auto" and settings.smtp_port == 465):
+            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as s:
+                _login_and_send(s, to_email, msg)
+        elif security == "starttls" or (security == "auto" and settings.smtp_port == 587):
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as s:
                 try:
                     s.starttls()
                 except smtplib.SMTPNotSupportedError:
-                    pass
-                if settings.smtp_user:
-                    s.login(settings.smtp_user, settings.smtp_pass)
-                s.sendmail(_addr(settings.smtp_from), [to_email], msg.as_string())
+                    pass  # Mailpit 等本地模拟服务不支持 STARTTLS，降级明文
+                _login_and_send(s, to_email, msg)
         else:
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as s:
-                if settings.smtp_user:
-                    s.login(settings.smtp_user, settings.smtp_pass)
-                s.sendmail(_addr(settings.smtp_from), [to_email], msg.as_string())
+                _login_and_send(s, to_email, msg)
     except (smtplib.SMTPException, OSError) as e:
         raise PushError(f"邮件发送失败: {e}") from e
+
+
+def _login_and_send(s: smtplib.SMTP, to_email: str, msg: MIMEText) -> None:
+    if settings.smtp_user:
+        s.login(settings.smtp_user, settings.smtp_pass)
+    s.sendmail(_addr(settings.smtp_from), [to_email], msg.as_string())
 
 
 def _addr(from_header: str) -> str:

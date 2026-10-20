@@ -30,7 +30,7 @@ class Settings:
         self.smtp_user: str = os.getenv("SMTP_USER", "")
         self.smtp_pass: str = os.getenv("SMTP_PASS", "")
         self.smtp_from: str = os.getenv("SMTP_FROM", "Daily News Assistant <news@example.com>")
-        self.smtp_starttls: bool = os.getenv("SMTP_STARTTLS", "1") == "1"
+        self.smtp_security: str = os.getenv("SMTP_SECURITY", "auto").lower()  # ssl | starttls | none | auto（按端口猜）
 
         # 调度与存储
         self.schedule_hour: int = int(os.getenv("SCHEDULE_HOUR", "8"))  # 用户本地时间该点触发
