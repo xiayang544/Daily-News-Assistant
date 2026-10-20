@@ -476,7 +476,7 @@ $('generate').onclick = async () => {
   btn.innerHTML = '<span class="spin"></span> Agent 生成中…';
   toast('Agent 正在联网搜索并撰写简报，约需 1-3 分钟');
   try {
-    const b = await api('/api/generate', {
+    const b = await api('/api/briefings/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: currentUser }),
     });
